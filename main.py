@@ -3,6 +3,7 @@
 import argparse
 import socket
 import struct
+import tempfile
 import time
 import threading
 
@@ -79,14 +80,18 @@ def client(args):
     def sender(sock):
         n_sent = 0
 
-        buf = bytes(1024 * 1024 * 10)
+        tmp = tempfile.TemporaryFile()
+        tmp.truncate(10 * 1024 * 1024)
 
         while not is_running:
-            pass
+            time.sleep(0.01)
 
         while is_running:
-            sock.sendall(buf)
-            n_sent += 1024 * 1024 * 10
+            tmp.seek(0)
+            sock.sendfile(tmp)
+            n_sent += tmp.tell()
+
+        tmp.close()
 
         nonlocal n_sent_total
         with lock:
