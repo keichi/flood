@@ -28,6 +28,8 @@ def receiver(sock, is_running, n_received_total):
     with n_received_total.get_lock():
         n_received_total.value += n_received
 
+    sock.close()
+
 
 def server(args):
     server_sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
@@ -85,6 +87,8 @@ def sender(sock, is_running, n_sent_total):
     with n_sent_total.get_lock():
         n_sent_total.value += n_sent
 
+    sock.close()
+
 
 def client(args):
     control_sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
@@ -122,6 +126,7 @@ def client(args):
         proc.join()
 
     control_sock.sendall(struct.pack(">b", CMD_END))
+    control_sock.close()
 
     print(f"Total bytes sent: {n_sent_total.value / 1000 / 1000 / 1000:.3f} GB")
 
