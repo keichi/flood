@@ -1,9 +1,12 @@
+#include <cstring>
 #include <cassert>
 #include <atomic>
 #include <chrono>
 #include <iostream>
 #include <thread>
 
+#include <sys/mman.h>
+#include <sys/sendfile.h>
 #include <sys/socket.h>
 #include <sys/types.h>
 #include <netinet/in.h>
@@ -21,12 +24,12 @@ enum Command
     CMD_END,
 };
 
-void receiver(int sock, std::atomic_flag& is_running, std::atomic<size_t>& n_total_received)
+void receiver(int sock, std::atomic<bool>& is_running, std::atomic<size_t>& n_total_received)
 {
     std::vector<uint8_t> buf(1024 * 1024);
     size_t n_received = 0;
 
-    while (is_running.test()) {
+    while (is_running) {
         uint8_t *ptr = buf.data();
         ssize_t len = buf.size();
 
@@ -35,7 +38,7 @@ void receiver(int sock, std::atomic_flag& is_running, std::atomic<size_t>& n_tot
             ptr += received;
             len -= received;
             n_received += received;
-        } while(len > 0 && is_running.test());
+        } while(len > 0 && is_running);
     }
 
     n_total_received += n_received;
@@ -77,9 +80,8 @@ int server()
 
         std::cout << "Opening " << num_streams << " streams" << std::endl;
 
-        std::atomic_flag is_running = ATOMIC_FLAG_INIT;
+        std::atomic<bool> is_running(true);
         std::atomic<size_t> n_total_received(0);
-        is_running.test_and_set();
 
         std::vector<std::thread> threads;
         for (int i = 0; i < num_streams; i++) {
@@ -106,7 +108,7 @@ int server()
         read(control_sock, buf, 1);
         assert(buf[0] == CMD_END);
 
-        is_running.clear();
+        is_running = false;
         for (std::thread &thread : threads) {
             thread.join();
         }
@@ -121,22 +123,29 @@ int server()
     return 0;
 }
 
-void sender(int sock, std::atomic_flag& is_running, std::atomic<size_t> &n_total_sent)
+void sender(int sock, std::atomic<bool>& is_running, std::atomic<size_t> &n_total_sent)
 {
-    std::vector<uint8_t> buf(1024 * 1024);
-
-    while (is_running.test()) {
-        const uint8_t *ptr = buf.data();
-        ssize_t len = buf.size();
-
-        do {
-            ssize_t sent = write(sock, ptr, len);
-            ptr += sent;
-            len -= sent;
-            n_total_sent += sent;
-        } while(len > 0 && is_running.test());
+    int fd = memfd_create("flood-sendbuf", 0);
+    if (fd < 0) {
+        std::cerr << "memfd_create() failed " << strerror(errno) << std::endl;
+    }
+	if (ftruncate(fd, 1024 * 1024) < 0) {
+        std::cerr << "ftruncate() failed " << strerror(errno) << std::endl;
     }
 
+    while (is_running) {
+        off_t offset = 0;
+        ssize_t len = 1024 * 1024;
+
+        do {
+            ssize_t sent = sendfile(sock, fd, &offset, len);
+            offset += sent;
+            len -= sent;
+            n_total_sent += sent;
+        } while(len > 0 && is_running);
+    }
+
+    close(fd);
     close(sock);
 }
 
@@ -170,8 +179,7 @@ int client(const std::string& server, int num_streams, int duration)
     buf[1] = num_streams;
     write(control_sock, buf, 2);
 
-    std::atomic_flag is_running = ATOMIC_FLAG_INIT;
-    is_running.test_and_set();
+    std::atomic<bool> is_running(true);
     std::atomic<size_t> n_total_sent(0);
 
     std::cout << "Opening " << num_streams << " streams" << std::endl;
@@ -199,7 +207,7 @@ int client(const std::string& server, int num_streams, int duration)
         std::cout << "Running..." << std::endl;
         std::this_thread::sleep_for(std::chrono::seconds(1));
     }
-    is_running.clear();
+    is_running = false;
 
     auto end = std::chrono::steady_clock::now();
 
